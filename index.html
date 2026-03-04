@@ -1,0 +1,534 @@
+diff --git a/index.html b/index.html
+new file mode 100644
+index 0000000000000000000000000000000000000000..7336193fc772f2cd93fd946cfcad1619656b9298
+--- /dev/null
++++ b/index.html
+@@ -0,0 +1,528 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++  <meta charset="UTF-8" />
++  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++  <title>Beginner Webcam Shooting Game</title>
++  <style>
++    :root {
++      --sky-top: #87ceeb;
++      --sky-bottom: #d6f5ff;
++      --panel: rgba(0, 0, 0, 0.45);
++      --text: #ffffff;
++      --good: #7dff9d;
++      --warn: #ffd166;
++    }
++
++    * {
++      box-sizing: border-box;
++      margin: 0;
++      padding: 0;
++      font-family: Arial, Helvetica, sans-serif;
++    }
++
++    body {
++      min-height: 100vh;
++      overflow: hidden;
++      background: linear-gradient(to bottom, var(--sky-top), var(--sky-bottom));
++      color: var(--text);
++    }
++
++    #gameCanvas {
++      display: block;
++      width: 100vw;
++      height: 100vh;
++      cursor: none;
++    }
++
++    /* Top-left game HUD (score + ammo) */
++    .hud {
++      position: fixed;
++      top: 14px;
++      left: 14px;
++      background: var(--panel);
++      border-radius: 12px;
++      padding: 10px 14px;
++      border: 1px solid rgba(255, 255, 255, 0.2);
++      backdrop-filter: blur(2px);
++      z-index: 10;
++      line-height: 1.5;
++      min-width: 180px;
++    }
++
++    .hud .label {
++      color: #d9ecff;
++      font-size: 14px;
++    }
++
++    .hud .value {
++      font-weight: bold;
++      font-size: 24px;
++      color: white;
++    }
++
++    #ammoValue.low {
++      color: var(--warn);
++    }
++
++    /* Camera preview with tracking rectangle */
++    .camera-panel {
++      position: fixed;
++      right: 14px;
++      bottom: 14px;
++      width: 240px;
++      border-radius: 12px;
++      overflow: hidden;
++      background: rgba(0, 0, 0, 0.55);
++      border: 1px solid rgba(255, 255, 255, 0.2);
++      z-index: 15;
++    }
++
++    .camera-title {
++      font-size: 12px;
++      padding: 6px 8px;
++      background: rgba(255, 255, 255, 0.12);
++      color: #f4fcff;
++      letter-spacing: 0.2px;
++    }
++
++    .camera-wrap {
++      position: relative;
++      width: 100%;
++      aspect-ratio: 4 / 3;
++      background: #222;
++    }
++
++    #camera {
++      width: 100%;
++      height: 100%;
++      object-fit: cover;
++      transform: scaleX(-1);
++      display: block;
++    }
++
++    #trackingOverlay {
++      position: absolute;
++      inset: 0;
++      pointer-events: none;
++    }
++
++    .info {
++      position: fixed;
++      left: 14px;
++      bottom: 14px;
++      background: rgba(0, 0, 0, 0.4);
++      border-radius: 10px;
++      padding: 8px 10px;
++      font-size: 13px;
++      z-index: 10;
++      max-width: 360px;
++      line-height: 1.35;
++    }
++  </style>
++</head>
++<body>
++  <!-- Heads-up display for score and ammo -->
++  <div class="hud">
++    <div class="label">Score</div>
++    <div id="scoreValue" class="value">0</div>
++    <div class="label" style="margin-top: 6px;">Ammo</div>
++    <div id="ammoValue" class="value">10 / 10</div>
++  </div>
++
++  <!-- Main game drawing area -->
++  <canvas id="gameCanvas"></canvas>
++
++  <!-- Small camera preview + green tracking box -->
++  <div class="camera-panel">
++    <div class="camera-title">Camera Preview + Green Tracking</div>
++    <div class="camera-wrap">
++      <video id="camera" autoplay playsinline muted></video>
++      <canvas id="trackingOverlay"></canvas>
++    </div>
++  </div>
++
++  <!-- Simple instructions for beginners -->
++  <div class="info">
++    Move a <b>green object</b> (like a green pen) in front of camera.<br>
++    <b>Top 20%</b> of camera = Shoot | <b>Bottom 20%</b> = Reload.
++  </div>
++
++  <script>
++    // =========================
++    // 1) Basic setup
++    // =========================
++    const canvas = document.getElementById('gameCanvas');
++    const ctx = canvas.getContext('2d');
++
++    const video = document.getElementById('camera');
++    const trackingOverlay = document.getElementById('trackingOverlay');
++    const tctx = trackingOverlay.getContext('2d');
++
++    const scoreValue = document.getElementById('scoreValue');
++    const ammoValue = document.getElementById('ammoValue');
++
++    // Hidden canvas used for reading webcam pixels (color detection)
++    const scanCanvas = document.createElement('canvas');
++    const scanCtx = scanCanvas.getContext('2d', { willReadFrequently: true });
++
++    // Resize game canvas to full browser window
++    function resizeCanvas() {
++      canvas.width = window.innerWidth;
++      canvas.height = window.innerHeight;
++    }
++    window.addEventListener('resize', resizeCanvas);
++    resizeCanvas();
++
++    // =========================
++    // 2) Game state variables
++    // =========================
++    let score = 0;
++    let ammo = 10;
++    const maxAmmo = 10;
++
++    // Small cooldown to avoid rapid fire
++    const shootCooldownMs = 450;
++    let lastShotTime = 0;
++
++    // Smooth crosshair movement with interpolation (lerp)
++    const crosshair = {
++      x: window.innerWidth / 2,
++      y: window.innerHeight / 2,
++      targetX: window.innerWidth / 2,
++      targetY: window.innerHeight / 2,
++      smooth: 0.12
++    };
++
++    // Only one bird object in the game (slow movement)
++    const bird = {
++      x: -80,
++      y: 120,
++      width: 56,
++      height: 36,
++      speed: 1.2
++    };
++
++    // Edge trigger flags for shoot/reload zones
++    let wasInTopZone = false;
++    let wasInBottomZone = false;
++
++    // Store current tracking data for drawing overlay box
++    let tracking = {
++      found: false,
++      x: 0,
++      y: 0,
++      minX: 0,
++      minY: 0,
++      maxX: 0,
++      maxY: 0
++    };
++
++    // =========================
++    // 3) Webcam access with getUserMedia
++    // =========================
++    async function setupCamera() {
++      try {
++        const stream = await navigator.mediaDevices.getUserMedia({
++          video: { width: 640, height: 480 },
++          audio: false
++        });
++        video.srcObject = stream;
++
++        await new Promise((resolve) => {
++          video.onloadedmetadata = () => resolve();
++        });
++
++        // Match overlay and scan canvas to real video resolution
++        trackingOverlay.width = video.videoWidth;
++        trackingOverlay.height = video.videoHeight;
++        scanCanvas.width = video.videoWidth;
++        scanCanvas.height = video.videoHeight;
++      } catch (error) {
++        alert('Could not access webcam. Please allow camera permission in Chrome.');
++        console.error(error);
++      }
++    }
++
++    // =========================
++    // 4) Green color detection
++    // =========================
++    function detectGreenObject() {
++      if (!video.videoWidth || !video.videoHeight) return;
++
++      // Copy webcam frame to hidden scan canvas
++      scanCtx.drawImage(video, 0, 0, scanCanvas.width, scanCanvas.height);
++      const imageData = scanCtx.getImageData(0, 0, scanCanvas.width, scanCanvas.height);
++      const data = imageData.data;
++
++      // We sample every few pixels for performance and stability
++      const step = 4;
++
++      let count = 0;
++      let sumX = 0;
++      let sumY = 0;
++      let minX = scanCanvas.width;
++      let minY = scanCanvas.height;
++      let maxX = 0;
++      let maxY = 0;
++
++      for (let y = 0; y < scanCanvas.height; y += step) {
++        for (let x = 0; x < scanCanvas.width; x += step) {
++          const idx = (y * scanCanvas.width + x) * 4;
++          const r = data[idx];
++          const g = data[idx + 1];
++          const b = data[idx + 2];
++
++          // Beginner-friendly green detection rule:
++          // green channel strong, red/blue lower
++          const isGreen = g > 95 && g > r * 1.25 && g > b * 1.2;
++
++          if (isGreen) {
++            count++;
++            sumX += x;
++            sumY += y;
++            if (x < minX) minX = x;
++            if (y < minY) minY = y;
++            if (x > maxX) maxX = x;
++            if (y > maxY) maxY = y;
++          }
++        }
++      }
++
++      // Minimum detected pixels to reduce noise / flicker
++      if (count > 40) {
++        const cx = sumX / count;
++        const cy = sumY / count;
++
++        tracking = { found: true, x: cx, y: cy, minX, minY, maxX, maxY };
++
++        // Because preview is mirrored, map x as mirrored to game space
++        const normalizedX = 1 - cx / scanCanvas.width;
++        const normalizedY = cy / scanCanvas.height;
++
++        crosshair.targetX = normalizedX * canvas.width;
++        crosshair.targetY = normalizedY * canvas.height;
++
++        handleZones(normalizedY);
++      } else {
++        tracking.found = false;
++        wasInTopZone = false;
++        wasInBottomZone = false;
++      }
++    }
++
++    // =========================
++    // 5) Zone actions (shoot / reload)
++    // =========================
++    function handleZones(normalizedY) {
++      const inTopZone = normalizedY < 0.2;
++      const inBottomZone = normalizedY > 0.8;
++
++      // Shoot once when entering top zone (with cooldown)
++      if (inTopZone && !wasInTopZone) {
++        attemptShoot();
++      }
++
++      // Reload once when entering bottom zone
++      if (inBottomZone && !wasInBottomZone) {
++        ammo = maxAmmo;
++      }
++
++      wasInTopZone = inTopZone;
++      wasInBottomZone = inBottomZone;
++    }
++
++    function attemptShoot() {
++      const now = performance.now();
++      if (now - lastShotTime < shootCooldownMs) return;
++      if (ammo <= 0) return;
++
++      lastShotTime = now;
++      ammo--;
++
++      // Hit check using current crosshair position and bird rectangle
++      const hit =
++        crosshair.x >= bird.x &&
++        crosshair.x <= bird.x + bird.width &&
++        crosshair.y >= bird.y &&
++        crosshair.y <= bird.y + bird.height;
++
++      if (hit) {
++        score += 1;
++        respawnBird();
++      }
++    }
++
++    function respawnBird() {
++      // Keep only one bird and respawn from left side
++      bird.x = -bird.width - Math.random() * 120;
++      bird.y = 80 + Math.random() * (canvas.height * 0.45);
++      bird.speed = 1 + Math.random() * 0.9; // slow speed
++    }
++
++    // =========================
++    // 6) Drawing helpers
++    // =========================
++    function drawBird() {
++      const x = bird.x;
++      const y = bird.y;
++
++      // Cartoon bird body
++      ctx.fillStyle = '#ff7f50';
++      ctx.beginPath();
++      ctx.ellipse(x + 24, y + 18, 22, 14, 0, 0, Math.PI * 2);
++      ctx.fill();
++
++      // Head
++      ctx.fillStyle = '#ff9966';
++      ctx.beginPath();
++      ctx.arc(x + 43, y + 14, 10, 0, Math.PI * 2);
++      ctx.fill();
++
++      // Eye
++      ctx.fillStyle = '#fff';
++      ctx.beginPath();
++      ctx.arc(x + 46, y + 12, 3, 0, Math.PI * 2);
++      ctx.fill();
++      ctx.fillStyle = '#111';
++      ctx.beginPath();
++      ctx.arc(x + 47, y + 12, 1.2, 0, Math.PI * 2);
++      ctx.fill();
++
++      // Wing
++      ctx.fillStyle = '#e5673f';
++      ctx.beginPath();
++      ctx.ellipse(x + 18, y + 20, 11, 7, -0.3, 0, Math.PI * 2);
++      ctx.fill();
++
++      // Beak
++      ctx.fillStyle = '#ffd166';
++      ctx.beginPath();
++      ctx.moveTo(x + 52, y + 15);
++      ctx.lineTo(x + 63, y + 18);
++      ctx.lineTo(x + 52, y + 21);
++      ctx.closePath();
++      ctx.fill();
++    }
++
++    function drawCrosshair() {
++      const x = crosshair.x;
++      const y = crosshair.y;
++
++      ctx.strokeStyle = '#ffffff';
++      ctx.lineWidth = 2;
++
++      // Outer circle
++      ctx.beginPath();
++      ctx.arc(x, y, 18, 0, Math.PI * 2);
++      ctx.stroke();
++
++      // Cross lines
++      ctx.beginPath();
++      ctx.moveTo(x - 26, y);
++      ctx.lineTo(x - 8, y);
++      ctx.moveTo(x + 8, y);
++      ctx.lineTo(x + 26, y);
++      ctx.moveTo(x, y - 26);
++      ctx.lineTo(x, y - 8);
++      ctx.moveTo(x, y + 8);
++      ctx.lineTo(x, y + 26);
++      ctx.stroke();
++    }
++
++    function drawTrackingOverlay() {
++      tctx.clearRect(0, 0, trackingOverlay.width, trackingOverlay.height);
++
++      // Top and bottom action zones (for beginner clarity)
++      tctx.fillStyle = 'rgba(100, 200, 255, 0.15)';
++      tctx.fillRect(0, 0, trackingOverlay.width, trackingOverlay.height * 0.2);
++      tctx.fillRect(0, trackingOverlay.height * 0.8, trackingOverlay.width, trackingOverlay.height * 0.2);
++
++      // Labels
++      tctx.fillStyle = 'rgba(255,255,255,0.9)';
++      tctx.font = '12px Arial';
++      tctx.fillText('Shoot Zone (Top 20%)', 8, 14);
++      tctx.fillText('Reload Zone (Bottom 20%)', 8, trackingOverlay.height - 8);
++
++      if (tracking.found) {
++        // Tracking box around detected green pixels
++        tctx.strokeStyle = '#00ff66';
++        tctx.lineWidth = 2;
++        tctx.strokeRect(
++          tracking.minX,
++          tracking.minY,
++          Math.max(1, tracking.maxX - tracking.minX),
++          Math.max(1, tracking.maxY - tracking.minY)
++        );
++
++        // Detected center point
++        tctx.fillStyle = '#00ff66';
++        tctx.beginPath();
++        tctx.arc(tracking.x, tracking.y, 4, 0, Math.PI * 2);
++        tctx.fill();
++      }
++    }
++
++    function drawBackgroundDecor() {
++      // Soft clouds to keep UI colorful but simple
++      const clouds = [
++        { x: 120, y: 90, s: 1.1 },
++        { x: canvas.width * 0.45, y: 120, s: 1.35 },
++        { x: canvas.width * 0.75, y: 80, s: 1.05 }
++      ];
++
++      ctx.fillStyle = 'rgba(255,255,255,0.85)';
++      for (const c of clouds) {
++        ctx.beginPath();
++        ctx.arc(c.x, c.y, 24 * c.s, 0, Math.PI * 2);
++        ctx.arc(c.x + 24 * c.s, c.y - 8 * c.s, 19 * c.s, 0, Math.PI * 2);
++        ctx.arc(c.x + 46 * c.s, c.y, 22 * c.s, 0, Math.PI * 2);
++        ctx.fill();
++      }
++    }
++
++    // =========================
++    // 7) Main game loop
++    // =========================
++    function update() {
++      detectGreenObject();
++
++      // Smooth interpolation for crosshair motion
++      crosshair.x += (crosshair.targetX - crosshair.x) * crosshair.smooth;
++      crosshair.y += (crosshair.targetY - crosshair.y) * crosshair.smooth;
++
++      // Move one bird slowly from left to right
++      bird.x += bird.speed;
++      if (bird.x > canvas.width + 40) {
++        respawnBird();
++      }
++
++      // Update HUD text
++      scoreValue.textContent = String(score);
++      ammoValue.textContent = `${ammo} / ${maxAmmo}`;
++      ammoValue.classList.toggle('low', ammo <= 2);
++    }
++
++    function draw() {
++      ctx.clearRect(0, 0, canvas.width, canvas.height);
++      drawBackgroundDecor();
++      drawBird();
++      drawCrosshair();
++      drawTrackingOverlay();
++    }
++
++    function loop() {
++      update();
++      draw();
++      requestAnimationFrame(loop);
++    }
++
++    // Start everything
++    (async function init() {
++      await setupCamera();
++      respawnBird();
++      loop();
++    })();
++  </script>
++</body>
++</html>
